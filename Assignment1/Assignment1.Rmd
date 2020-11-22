@@ -1,0 +1,92 @@
+---
+title: "Assignment 1 - Webscraping"
+author: "Zsombor Hegedus"
+date: '2020 november 22 '
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rvest)
+library(data.table)
+```
+
+## Overview
+
+This document is to showcase the solution to the [first assignment](https://github.com/misrori/web_scraping_2020) for Coding 2 - Web scraping. 
+
+
+#### Website introduction
+
+I decided to scrape one of the biggest Hungarian financial news website called [Portfolio](https://www.portfolio.hu). When searching for any term the website directs the browser to a page with 20 articles/page.
+
+#### URLs to scrape
+
+I first needed to define a function that creates a vector of URLs corresponding to a page with 20 articles. My function, `get_portfolio_urls` needs two arguments, the keywords for which the user wants to search for, and the number of pages they want to download. So all in all, if someone wants to get pages for 100 articles for any search term, they should use the search term as a string and 5 as the second argument. The function is below: 
+
+```{r}
+get_portfolio_urls <- function(keyword,num = 5) {
+    domain <- 'https://www.portfolio.hu/'
+    subdirectory <- 'kereses'
+    query <- '?q='
+    search_term <- URLencode(keyword)
+    page <- 'page='
+    return(paste0(domain,subdirectory,query,search_term,'&',page,seq(1,num)))
+}
+
+```
+
+#### Scraping a webpage
+
+For the scraping I first get the boxes surrounding an article, that holds all information that I want to scrape (author, time, title and link to an article). To get the boxes, I used the following function:  
+
+```{r}
+get_boxes <- function(url) {
+    t<- read_html(url)
+    boxes <-
+        t %>% 
+        html_nodes('.article-lists article')
+    return(boxes)
+}
+```
+Since I have the ability to create links to scrape multiple articles and I can also retrieve the boxes, scraping for the information that I look for can be done easily with an `lapply`. My final function combines these three and in the end it returns a data frame. This is in the below code box:
+
+```{r}
+get_portfolio_df <- function(keyword,num) {
+
+    links <- get_portfolio_urls(keyword,num)
+    
+    boxes<- lapply(links,get_boxes)    
+    
+    boxes_df<- lapply(boxes, function(x) {
+        t_list <- list()
+        t_list[['time']] <- x %>%  html_nodes('time') %>% html_attr('datetime')
+        t_list[['author']] <- x %>% html_nodes('time') %>%  html_nodes('.ml-2') %>% html_text()
+        t_list[['title']] <- x %>% html_nodes('.row')%>% html_nodes('a') %>% html_text()
+        t_list[['title']] <- t_list[['title']][t_list[['title']]!=""]
+        t_list[['link']] <- unique(x %>% html_nodes('.row')%>% html_nodes('a') %>% html_attr('href'))
+        return(data.frame(t_list))  
+    })
+
+    df<- rbindlist(boxes_df)
+    return(df)
+    
+}
+```
+
+#### Create outputs
+
+As requested I saved down the data frame that I created with the above functions both in csv and rds formats (in this example, my dataframe holds 400 articles on big data from Portfolio):
+
+```{r}
+df<- get_portfolio_df('big data',20)
+
+write.csv(df,'assignment.csv')
+saveRDS(df, 'assignment.rds')
+
+```
+
+
