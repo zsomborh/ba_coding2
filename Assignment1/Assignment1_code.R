@@ -43,3 +43,6 @@ get_portfolio_df <- function(keyword,num) {
 
 
 df<- get_portfolio_df('big data',20)
+
+write.csv(df,'assignment.csv')
+saveRDS(df, 'assignment.rds')
