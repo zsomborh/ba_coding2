@@ -16,7 +16,7 @@ library(data.table)
 
 ## Overview
 
-This document is to showcase the solution to the [first assignment](https://github.com/misrori/web_scraping_2020) for Coding 2 - Web scraping. 
+This document is to showcase the solution to the [first assignment](https://github.com/misrori/web_scraping_2020) for Coding 2 - Web scraping. Files are also available in my [github repo](https://github.com/zsomborh/ba_coding2/tree/main/Assignment1).
 
 
 #### Website introduction
