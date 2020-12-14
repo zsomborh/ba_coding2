@@ -1,0 +1,307 @@
+---
+title: "Assignment 2 - Coding 2 // Scraping and analysing BoxRec"
+author: "Zsombor Hegedus"
+date: '2020 november 29'
+output:
+    prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction #
+
+In this document my focus is twofold. On the one hand I will show the stepts I took to scrape Boxrec.com in R using rvest and  Rselenium. On the other hand I will also introduce the data that I downloaded in which I will provide high-level descriptive statistics and will also try to uncover a pattern of association between a few scraped variables with the use of linear regression models. 
+
+All the files that I have used are saved down in my [github repo](https://github.com/zsomborh/ba_coding2/Assignment2). 
+
+# Scraping BoxRec #
+
+Before reading this, please make sure you have read the webscraping notes that I added in the readme.md of my [repo](https://github.com/zsomborh/ba_coding2/Assignment2). 
+
+The first important step is to check robots.txt and I make sure that there are no restrictions as to who can scrape the site - there was no indication of any restricted activity for BoxRec. There are a number of webbrowser alerts that the site is using to block robots, which I will elaborate later on. First of all, my goal was to get the ranking of the top 10.000 boxers from the site - this data is stored in an html table on a number of different pages. In each page, there are 50 observations to scrape, so I needed to generate 200 urls with the following function: 
+
+```{r, echo=TRUE}
+get_boxer_urls <- function(rank = 3) {
+    domain <- 'https://boxrec.com/'
+    language <- 'en/'
+    subdirectory <- 'ratings'
+    query <- '?offset='
+    step <- 50 #only 50 rows are shown for table
+    rank <- (1:rank-1)*step
+    return(paste0(domain,language, subdirectory,query,rank))
+}
+```
+
+### Scraping function ###
+
+Once that was ready, I needed to write a function that scraped the table with 50 observations. The table itself could be scraped easily however however there were many challenges with some of the columns: 
+
+- First, the stars after the points - I needed to get the class attributes of these small icons. In order to turn them into numeric values I needed to count the number of *full* stars and *half* stars and add them together.  
+- I also needed to convert the *last 6* column - This column is to show the outcome of the last 6 matches of a boxer. I converted the icons into columns with values that can be used for analysis. Here I needed to get the class attributes of each and filtered for those that started with the substring `'last6 '`.
+
+The function that I wrote does the above in the following manner (a couple of packages are required to run this, if interested, please look up *boxrec_get_data.R* in my repo): 
+
+```{r,eval=FALSE, echo=TRUE}
+get_boxer_data <-function(content) {
+
+    #Get table with most data
+    table <- content %>% html_table(fill = TRUE)
+    table <- table[[2]]
+    table<- clean_names(table)
+    table <- 
+        table  %>%  mutate(
+        rank = x,
+        x = NULL,
+        x_2 = NULL, 
+        last_6 = NULL
+    )
+    
+    table <- table%>% filter(!is.na(as.numeric(points)))
+    
+    
+    # Get the number of stars for a given boxer
+    boxes <- content %>% html_nodes('#ratingsResults div span')
+    star_list <- lapply(boxes, function(x){
+        x %>% html_children() %>%  html_attr('class')
+        })
+    
+    stars <- lapply(star_list,str_count,pattern = 'fas fa-star star-icon -star')
+    half_stars <- lapply(star_list,str_count,pattern = 'fas fa-star-half star-icon -star')
+    stars <- 
+        unlist(lapply(stars,sum),use.names = FALSE) + 
+        unlist(lapply(half_stars,sum),use.names = FALSE) *0.5
+    
+    table$stars <- stars
+    
+    # Get last six match
+    boxes <- content %>% html_nodes('#ratingsResults tr :nth-child(8)') 
+    
+    lastsix <- lapply(boxes[2:length(boxes)], function(x){
+        my_list <- unlist(x %>% html_children() %>% html_children() %>% html_children() %>% html_attr('class'))
+        my_list <- grep('last6',my_list, value = TRUE)
+        my_list <- str_remove(my_list, 'last6 bg')
+        return(my_list)
+    })
+    
+    lastsix_df<- do.call(rbind,lastsix)
+    colnames(lastsix_df) <- c('last6','last5','last4', 'last3', 'last2', 'last1')
+    
+    final_df <- cbind(table,lastsix_df)
+    
+    return(final_df)
+}
+```
+
+### Using RSelenium ###
+
+I read on a blog that if BoxRec finds your activities suspicious they might block users based on IP, so I was extra careful not to cause any headache for their servers. 
+
+I encountered 2 protocols that BoxRec used in order not to allow everyone to scrape their data:
+
+1 They only allow looking at a few pages without logging to their site
+2 They use a captcha when they notice suspicious activities and whoever is browsing their site needs to identify bikes, lamps, pedestrian crosses etc... in order to verify that they are not robots.
+
+In order to overcome the above, I used `Rselenium`. This super handy tool allowed me to log in to the site when scraping, and I could also click through the captchas in the webbrowser. I configured the path to my google chrome webbrowser's location and then logged in to the browser that popped up with the following code.
+
+``` {r, eval=FALSE, echo = TRUE}
+rD1 <- rsDriver(browser = "chrome", port = 4567L, geckover = NULL, 
+                chromever =  toString(chromedriver), iedrver = NULL, 
+                phantomver = NULL, verbose = TRUE)
+remDr1 <- rD1[["client"]]
+
+login = 'https://boxrec.com/en/login'
+
+remDr1$navigate(login)
+```
+
+I created and empty df and iterated through the urls that I created with my function. For each iteration I navigated to the url, got the content from the page with the `read_html()` function and scraped the content with my scraper function. Iteration was the best way to deal with this, as if for any reason the process got disrupted (e.g. a captcha came up), I could restart the iteration from where it last ended, and continued. 
+
+Between each iteration I added a 40 seconds sleep, so that I don't overload the servers. 
+
+Code for the iteration: 
+
+``` {r ,eval=FALSE, echo = TRUE}
+navigate_driver <- function(url, client){
+    remDr1 <- client
+    remDr1$navigate(url)
+    content <-read_html(remDr1$getPageSource()[[1]])
+    Sys.sleep(40) # Don't overload the server be idle for 40 secs
+    return(content)
+}
+
+remDr1 <- rD1[["client"]]
+df<- data.frame()
+urls<- get_boxer_urls(200)
+
+for (i in urls){
+    content <- navigate_driver(i, remDr1)
+    tdf <- get_boxer_data(content)
+    df <- rbind(df,tdf)
+}
+
+```
+
+# Analysis #
+
+Once the scraping was over, I cleaned the data, for which all steps are available in the *boxrec_clean.R* file that is also available in my [repo](https://github.com/zsomborh/ba_coding2/Assignment2).
+
+### Descriptive statistics ###
+
+When analysing the data I was mainly interested in explaining the *points* variable that determines the ranking between boxers. I wanted to see if there is any pattern of association between the points and the combination of age and win ratio (which is basically a percentage of wins compared to all matches). A few summary statistics can be seen in the below table and figure: 
+
+```{r, echo = FALSE , results = "asis", warning = FALSE, message = FALSE }
+
+data_in <- "C:/Users/T450s/Desktop/programming/git/ba_coding2/Assignment2/"
+
+
+library(data.table)
+library(tidyverse)
+library(moments)
+library(xtable)
+library(ggpubr)
+library(estimatr)
+library(texreg)
+library(htmlTable)
+
+df <- read_csv(paste0(data_in,'data/clean/boxers_clean.csv'))
+
+
+points_sum <- df %>% summarise(
+    variable = 'Points',
+    mean     = round(mean(points),2),
+    median   = median(points),
+    std      = round(sd(points),2),
+    iq_range = IQR(points), 
+    min      = min(points),
+    max      = max(points),
+    skew     = round(skewness(points),2),
+    numObs   = sum( !is.na( points ) ) )
+
+age_sum <- df %>% filter(!is.na(age)) %>%  summarise(
+    variable = 'Age',
+    mean     = round(mean(age),2),
+    median   = median(age),
+    std      = round(sd(age),2),
+    iq_range = IQR(age, na.rm= TRUE), 
+    min      = min(age),
+    max      = max(age),
+    skew     = round(skewness(age),2),
+    numObs   = sum( !is.na( age ) ) )
+
+stars_sum <- df %>% summarise(
+    variable = 'Stars',
+    mean     = round(mean(stars),2),
+    median   = median(stars),
+    std      = round(sd(stars),2),
+    iq_range = IQR(stars, na.rm=TRUE), 
+    min      = min(stars),
+    max      = max(stars),
+    skew     = round(skewness(stars),2),
+    numObs   = sum( !is.na( stars ) ) )
+
+
+df_summary <- points_sum %>% add_row( stars_sum ) %>% add_row(age_sum)
+htmlTable(df_summary, caption = "Summary statistics of examined variables")
+```
+
+
+
+```{r fig 1, fig.width= 10, fig.cap='Histograms of variables of the dataframe', echo = FALSE , results = "asis", warning = FALSE, message = FALSE }
+p1 <- ggplot( df[df$points < 350 ,] , aes( x = points ) ) +
+    geom_histogram( alpha = 1, binwidth = 5, color = 'black', fill = 'lightblue') +
+    xlim(c(0,200))+
+    ylim(c(0,350)) +
+    xlab('Distribution of points under 350 points')
+
+p2<- ggplot( df[df$points > 350,] , aes( x = points ) ) +
+    geom_histogram( alpha = 1, binwidth = 100, color = 'black', fill = 'blue') +
+    xlab('Distribution of points above 350 points')
+
+p3<- ggplot( df , aes( x = age ) ) +
+    geom_histogram( alpha = 1, binwidth = 3, color = 'black', fill = 'navyblue') +
+    xlab('Age distribution')
+
+p4<- ggplot( df , aes( x = division ) ) +
+    geom_bar( alpha = 1, color = 'black', fill = 'lightgreen') + coord_flip()+
+    xlab('Division breakdown')
+
+p5 <- ggplot( df , aes( x = stars ) ) +
+    geom_histogram( alpha = 1, binwidth = 0.5, color = 'black', fill = 'green') +
+    xlab('Star breakdown')
+
+p6<- ggplot( df , aes( x = stance ) ) +
+    geom_bar( alpha = 1, color = 'black', fill = 'darkgreen') + coord_flip() +
+    xlab('Stance breakdown')
+
+
+ggarrange(p1, p2, p3,p4,p5,p6, nrow = 2, ncol = 3 )
+```
+
+What is important to note is that the **point** distribution is not at all balanced. There are a few boxers with very high points (more than 350), and a lot other with close to 0 points. The distribution of the points looks lognormal, and I will also use log transformation on this variable. **Age** is distributed with a shape that resembles a normal distribution and we can see that the average age is a little bit less than 30 years. The **star** histogram follows the point distribution, with a little bit less occurrances in the lower categories (I noticed at data exploration that, the stars are given after certain amount of points are achieved). There is not a lot that I can read out from the categorical variables - stance and division.
+
+### Looking for patterns ###
+
+Since I was interested to see what can help explain the points of a boxer, I tried to create a new variable that captures their success in their games so far. I thought the percentage amount of won games could be a good variable for this, which I defined in the following manner: 
+
+$$ Win Rate = Games Won / Total Games $$
+
+The below scatter plots show the relationship between win rate and log points in different stance breakdowns:
+
+```{r fig 2, fig.width= 10, fig.cap='Scatter plots of win_rate vs log points in differente stance breakdowns', echo = FALSE , results = "asis", warning = FALSE, message = FALSE }
+df <- df %>%  mutate(
+    ln_points =  log(points),
+    age_sq = age**2,
+    win_rate = won/(won+draw+lost),
+    ln_win_rate = log(win_rate)
+)
+
+ggplot(df, aes(x=win_rate,y=ln_points, color = stance)) + geom_point() + facet_wrap(~ stance)
+```
+
+Looking at the charts we can see that for each stance that there seems to be a positive trend between win ratio and log points received. This can also be seen from the below scatter plot, where I also added a linear regression line: 
+
+```{r fig 3, fig.width= 10, fig.cap='Regression line between win_rate vs log points', echo = FALSE , results = "asis", warning = FALSE, message = FALSE }
+ggplot( data = df, aes( x = win_rate, y = ln_points ) ) + 
+    geom_point( color='blue') +
+    geom_smooth( method = lm , color = 'red' ) +
+    labs(x='Win rate',y='log points')
+```
+
+I also wanted to control for the age of a player, as I thought a younger boxer might still be inexperienced while an older one might have already lost their prime form. The following scatter plots in division breakdown visualise this relationship. 
+
+```{r fig 4,fig.height=10, fig.width= 10, fig.cap='Scatter plots of age vs log points in different division breakdowns', echo = FALSE , results = "asis", warning = FALSE, message = FALSE }
+ggplot(df, aes(x=age,y=ln_points, color = stance )) + geom_point() + facet_wrap(~ division)
+
+
+```
+
+We can somehow see the pattern that I mentioned, in the data younger and older people generally had lower points, then middle aged boxers. This looks to be a non-linear pattern, so I will use the quadratic form of age in the final regression models.
+
+### Regression ###
+
+I ran 3 linear regression models, where the first one used only **win_rate**, the second used **age** as well, and the third used the **quadratic function of age**. The regression results are the below: 
+
+```{r, results = 'asis', echo = FALSE}
+reg1 <- lm_robust(ln_points ~ win_rate , data = df, se_type = 'HC2')
+reg2 <- lm_robust(ln_points ~ win_rate + age , data = df, se_type = 'HC2')
+reg3 <- lm_robust(ln_points ~ win_rate +age + age_sq, data = df, se_type = 'HC2')
+
+
+summary<- htmlreg( list(reg1 , reg2 , reg3 ),
+                   type = 'html',
+                   custom.model.names = c("~ win_rate"," ~win_rate+age",
+                                          "~ win_rate + quad(age)"),
+                   caption = "Linear regression models")
+
+summary
+```
+
+With a 95% confidence, we can see that the variables are significant in every category. The model fit improves the more variables we include. For this three, R sqaured goes up to 0.17 which can be considered moderate. Looking at the coefficients in the first regression we can see that with a unit increase in win rate we can expect the points to increase by 300%, which means that every win can increase a boxer's point significantly. Inclusion of age looks to be better in the quadratic form, which can not be interpreted easily, but looks like it is worth to include this variable in the model. 
+
+# Conclusions
+
+I set out to scrape BoxRec and did some very high level analysis in the data that I harvested. Rvest was not enough, and I needed to use RSelenium in order to scrape the tables on the site. In the ranking table, boxers have points that determine their final ranking, however it is hard to estimate from the data what drives these points the most. I created a variable that looks at the ratio of wins over the total matches of a player, which seemed to be a moderately good factor to explain what should we expect from a player's points. I also experimented with age as a confounder and saw that it actually helped in achieving a better model fit. All in all it would be highly advisable to gather more data on the players, such as their in-fight statistics to improve the model, but that is outside of the scope of this document. 

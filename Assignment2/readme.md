@@ -1,0 +1,3 @@
+# Assignment 2 #
+
+This folder contains codes and data for Assignment 2 made for Coding 2 - Webscraping course in which I scraped BoxRec, a site that has data on boxers. I also ran a few linear regressions to see if there are any patterns to be uncovered in the data, and what can predict the points a player has. For more colour please read the html file in the docs folder, but before that, please make sure you read the notices in the [repo of mikedidomizio](https://github.com/boxing/boxrec) when they also mention scraping best practices.
